@@ -1,36 +1,26 @@
 cff-version: 1.2.0
-title: >-
-  MIMIC-IV MEDS: An ETL pipeline to extract MIMIC-IV data
-  into the MEDS format
-message: 'If you use this software, please cite it as below.'
+title: Zigong MEDS ETL
+message: If you use this software, please cite the Zigong dataset below.
 type: software
 authors:
-  - family-names: McDermott
-    given-names: Matthew
-    email: mattmcdermott8@gmail.com
-    orcid: 'https://orcid.org/0000-0001-6048-9707'
   - family-names: Xu
-    given-names: Justin
-    orcid: 'https://orcid.org/0000-0003-4700-6277'
+    given-names: Ping
+  - family-names: Chen
+    given-names: Lin
+  - family-names: Zhang
+    given-names: Zhongheng
 identifiers:
   - type: doi
-    value: 10.5281/zenodo.17535580
-repository-code: >-
-  https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS
-url: >-
-  https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS
+    value: 10.13026/xpt9-z726
+url: https://physionet.org/content/icu-infection-zigong-fourth/1.1/
 abstract: >-
-  This pipeline extracts the MIMIC-IV dataset (from
-  physionet) into the MEDS (Medical Event Data Standard)
-  format, providing a standardized approach to processing
-  electronic health record data for research and analysis.
+  Configuration-only ETL that converts the Zigong Fourth People's Hospital ICU
+  infection database to the Medical Event Data Standard.
 keywords:
   - medical-data
   - healthcare
   - ETL
   - MEDS
-  - MIMIC-IV
+  - Zigong
   - electronic-health-records
 license: MIT
-version: 0.0.6
-date-released: '2025-05-13'

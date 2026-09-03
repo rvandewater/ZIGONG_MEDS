@@ -166,3 +166,6 @@ cython_debug/
 
 # Demo cohort built by tests/e2e_demo_test.py when MEDS_DEMO_OUTPUT_DIR points here (CI).
 .demo-cohort/
+
+# Local PhysioNet source data
+Zigong/
