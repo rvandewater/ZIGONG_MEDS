@@ -32,6 +32,24 @@ SF-36 responses. No external terminology mapping is claimed where the source doe
 
 For a reusable mapping checklist, see [docs/MEDS_ETL_MAPPING.md](docs/MEDS_ETL_MAPPING.md).
 
+## Data caveats
+
+**Nursing chart timestamps are coarse.** In v1.1, `dtNursingChart` has about 1 million rows with a
+usable `ChartTime` but only about 23,000 distinct (patient, `ChartTime`) pairs. A typical timestamp
+covers 26 source rows, and the largest covers 266. This comes from the source release, not the ETL.
+In the MEDS output, one timestamp therefore holds many readings of the same measurement, on average
+about 15 `NURSING//HEART_RATE` values, and similarly for blood pressure, SpO2, and other vitals. The
+order of events within a timestamp carries no clinical meaning.
+
+When defining tasks or features on this dataset:
+
+- Do not rely on order within a timestamp, such as "last value before X", minute-level features, or
+    sequence models that treat event order as real time order.
+- Choose prediction times that do not fall inside a timestamp's group of events, and aggregate values
+    within a timestamp (for example mean, min, or max) rather than picking one.
+
+About 314,000 nursing rows (23%) have `ChartTime = NA` in the source and are dropped.
+
 ## Synthetic validation
 
 ```bash
