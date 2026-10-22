@@ -1,13 +1,26 @@
-# Zigong Fourth People's Hospital ICU infection database (PhysioNet v1.1) to MEDS.
-# All source times are deidentified hours from hospital admission. 1970-01-01 is
-# a pseudotime anchor: it preserves ordering and intervals without asserting a
-# real calendar date.
+# The complete Zigong Fourth People's Hospital ICU infection database (PhysioNet v1.1) MEDS ETL.
+# This one file *is* the package: `sources:` says where the raw data comes from, `etl:` supplies
+# the run knobs, and every other top-level key is a raw table whose events are extracted from it.
+# It is registered with `meds-extract-run` under the name `Zigong` (see this repo's
+# `pyproject.toml`), so the whole ETL is one command:
 #
-# The release was written by R's write.csv: a missing value is the bare string NA, and
-# missing text in several dtNursingChart and dtLab columns is a quoted empty string.
-# Neither is read as null, so every code and text value below guards against both.
+#     meds-extract-run spec=Zigong output_dir=$MEDS_OUTPUT_DIR
+#
+# Conventions used throughout:
+#
+# - All source times are deidentified hours from hospital admission. 1970-01-01 is a pseudotime
+#   anchor: it preserves ordering and intervals without asserting a real calendar date. Every
+#   patient has exactly one admission in v1.1, so per-admission offsets never collide.
+# - The release was written by R's write.csv: a missing value is the bare string NA, and missing
+#   text in several dtNursingChart and dtLab columns is a quoted empty string. Neither is read as
+#   null, so every code and text value below guards against both. Free-text nursing fields also
+#   require a word character, which drops whitespace-, DEL- and punctuation-only entries.
+# - Codes keep the source's own vocabulary. No standard-terminology parent is claimed where the
+#   release does not document one.
 
 etl:
+  # `meds-extract-run` defaults the dataset name to the registered entry-point name; this fallback
+  # makes the spec self-describing when it is resolved by `pkg://` reference or filesystem path.
   dataset_name: Zigong
   n_subjects_per_shard: 1000
 
@@ -46,10 +59,17 @@ dtBaseline:
     inpatient_stay_id: $INP_NO
 
 dtDrugs:
+  # dtDrugs has no INP_NO; with one admission per patient the stay is recovered from dtBaseline.
+  _table:
+    join:
+      dtBaseline:
+        key: PATIENT_ID
+        cols: [INP_NO]
   prescription:
     code: f"MEDICATION//{$DrugName}"
     time: "(1970-01-01 @ 00:00) + $Drug_time::hours"
     text_value: $Formula
+    inpatient_stay_id: $INP_NO
 
 dtICD:
   _table:
@@ -73,9 +93,13 @@ dtLab:
       dtBaseline:
         key: INP_NO
         cols: [PATIENT_ID, DISCHARGE_DATE_TIME]
+  # Results timed after hospital discharge (~0.3% of rows) are dropped; pre-admission results
+  # (down to about -24 h) are kept. Placeholder values made only of dots or asterisks (".....",
+  # "****") carry no result and are dropped.
   lab_result:
     code: >-
       f"LAB//{$Category}//{$Item}//{$Unit if $Unit != '' else 'UNK'}"
+      if /[^.*\s]/ in $LabValue
     time: "(1970-01-01 @ 00:00) + $LabTime::hours if $LabTime <= $DISCHARGE_DATE_TIME"
     numeric_value: $LabValue::?float64
     text_value: $LabValue
@@ -94,6 +118,12 @@ dtTransfer:
     transfer_reason: $StopReason
     inpatient_stay_id: $INP_NO
 
+# Every row with ChartTime = NA belongs to a stay that is not in dtBaseline, so the inner join
+# drops them. Chart times more than 24 h before admission (including some corrupt offsets of
+# millions of hours) or after discharge are dropped too. Several columns are not mapped: Rhythm,
+# Lower_extremity_blood_pressure_monitoring, Left/Right_pupil_reflex and ETCO2 are NA in every
+# row; MAP, PSIPAP, R and FIO2 hold only unit strings; Invasive_SBP._1 is a documented technical
+# duplicate; F is documented as having no clinical relevance.
 dtNursingChart:
   _table:
     join:
@@ -161,7 +191,7 @@ dtNursingChart:
     numeric_value: $blood_sugar::?float64
     inpatient_stay_id: $INP_NO
   oxygen_inhalation_mode:
-    code: '"NURSING//OXYGEN_INHALATION_MODE" if $Oxygen_inhalation_mode != "NA" and $Oxygen_inhalation_mode != ""'
+    code: '"NURSING//OXYGEN_INHALATION_MODE" if $Oxygen_inhalation_mode != "NA" and /\w/ in $Oxygen_inhalation_mode'
     time: $chart_time
     text_value: $Oxygen_inhalation_mode
     inpatient_stay_id: $INP_NO
@@ -171,7 +201,7 @@ dtNursingChart:
     numeric_value: $Oxygen_flow::?float64
     inpatient_stay_id: $INP_NO
   ventilation_mode:
-    code: '"NURSING//VENTILATION_MODE" if $Breathing_pattern != "NA" and $Breathing_pattern != ""'
+    code: '"NURSING//VENTILATION_MODE" if $Breathing_pattern != "NA" and /\w/ in $Breathing_pattern'
     time: $chart_time
     text_value: $Breathing_pattern
     inpatient_stay_id: $INP_NO
@@ -180,14 +210,13 @@ dtNursingChart:
     time: $chart_time
     numeric_value: $Vt_setting::?float64
     inpatient_stay_id: $INP_NO
-  # FIO2 is not mapped: in v1.1 it holds only the unit string "%", never a value.
   monitored_tidal_volume:
     code: '"NURSING//MONITORED_TIDAL_VOLUME" if $Vt_Supervisor::?float64 >= 0'
     time: $chart_time
     numeric_value: $Vt_Supervisor::?float64
     inpatient_stay_id: $INP_NO
   consciousness:
-    code: '"NURSING//CONSCIOUSNESS" if $consciousness != "NA" and $consciousness != ""'
+    code: '"NURSING//CONSCIOUSNESS" if $consciousness != "NA" and /\w/ in $consciousness'
     time: $chart_time
     text_value: $consciousness
     inpatient_stay_id: $INP_NO
@@ -201,63 +230,83 @@ dtNursingChart:
     time: $chart_time
     numeric_value: $Right_pupil_size::?float64
     inpatient_stay_id: $INP_NO
+  # GCS components are charted as "<score>→<Chinese label>", e.g. "3→呼唤睁眼". The leading score
+  # is the numeric_value; non-scorable entries ("T" intubated, "S" motor disorder) keep only the
+  # text.
   gcs_eye_response:
-    code: '"NURSING//GCS_EYE_RESPONSE" if $`open_one''s_eyes` != "NA" and $`open_one''s_eyes` != ""'
+    code: '"NURSING//GCS_EYE_RESPONSE" if $`open_one''s_eyes` != "NA" and /\w/ in $`open_one''s_eyes`'
     time: $chart_time
+    numeric_value: '(extract group 1 of /^\s*([1-4])\s*[^\d\s]/ from $`open_one''s_eyes`)::?float64'
     text_value: $`open_one's_eyes`
     inpatient_stay_id: $INP_NO
   gcs_motor_response:
-    code: '"NURSING//GCS_MOTOR_RESPONSE" if $motion != "NA" and $motion != ""'
+    code: '"NURSING//GCS_MOTOR_RESPONSE" if $motion != "NA" and /\w/ in $motion'
     time: $chart_time
+    numeric_value: '(extract group 1 of /^\s*([1-6])\s*[^\d\s]/ from $motion)::?float64'
     text_value: $motion
     inpatient_stay_id: $INP_NO
   gcs_verbal_response:
-    code: '"NURSING//GCS_VERBAL_RESPONSE" if $language != "NA" and $language != ""'
+    code: '"NURSING//GCS_VERBAL_RESPONSE" if $language != "NA" and /\w/ in $language'
     time: $chart_time
+    numeric_value: '(extract group 1 of /^\s*([1-5])\s*[^\d\s]/ from $language)::?float64'
     text_value: $language
     inpatient_stay_id: $INP_NO
+  # Line and tube columns hold the charted length in cm, or a status such as "拔除" (removed) or
+  # "不详" (unknown); the length is the numeric_value and the raw entry stays in text_value. The
+  # `::str` casts keep the text guards valid whichever dtype the column is inferred as.
   cvc:
-    code: '"NURSING//CVC" if $CVC != "NA" and $CVC != ""'
+    code: '"NURSING//CVC" if $CVC::str != "NA" and /\w/ in $CVC::str'
     time: $chart_time
-    text_value: $CVC
+    numeric_value: $CVC::?float64
+    text_value: $CVC::str
     inpatient_stay_id: $INP_NO
   picc:
-    code: '"NURSING//PICC" if $PICC != "NA" and $PICC != ""'
+    code: '"NURSING//PICC" if $PICC::str != "NA" and /\w/ in $PICC::str'
     time: $chart_time
-    text_value: $PICC
+    numeric_value: $PICC::?float64
+    text_value: $PICC::str
     inpatient_stay_id: $INP_NO
+  # Every numeric Endotracheal_intubation value equals Endotracheal_intubation_Depth on the same
+  # row, so only its non-numeric statuses (e.g. "拔除", removed) are emitted here; the depth is
+  # emitted by endotracheal_intubation_depth below.
   endotracheal_intubation:
-    code: '"NURSING//ENDOTRACHEAL_INTUBATION" if $Endotracheal_intubation != "NA" and $Endotracheal_intubation != ""'
+    code: >-
+      "NURSING//ENDOTRACHEAL_INTUBATION"
+      if $Endotracheal_intubation::str != "NA" and /\w/ in $Endotracheal_intubation::str
+      and /[^0-9.\s]/ in $Endotracheal_intubation::str
     time: $chart_time
-    text_value: $Endotracheal_intubation
+    text_value: $Endotracheal_intubation::str
     inpatient_stay_id: $INP_NO
   gastric_tube:
-    code: '"NURSING//GASTRIC_TUBE" if $Gastric_tube != "NA" and $Gastric_tube != ""'
+    code: '"NURSING//GASTRIC_TUBE" if $Gastric_tube::str != "NA" and /\w/ in $Gastric_tube::str'
     time: $chart_time
-    text_value: $Gastric_tube
+    numeric_value: $Gastric_tube::?float64
+    text_value: $Gastric_tube::str
     inpatient_stay_id: $INP_NO
   medium_length_catheter:
-    code: '"NURSING//MEDIUM_LENGTH_CATHETER" if $Medium_length_catheter != "NA" and $Medium_length_catheter != ""'
+    code: '"NURSING//MEDIUM_LENGTH_CATHETER" if $Medium_length_catheter::str != "NA" and /\w/ in $Medium_length_catheter::str'
     time: $chart_time
-    text_value: $Medium_length_catheter
+    numeric_value: $Medium_length_catheter::?float64
+    text_value: $Medium_length_catheter::str
     inpatient_stay_id: $INP_NO
   hemodialysis_tube:
-    code: '"NURSING//HEMODIALYSIS_TUBE" if $Hemodialysis_tube != "NA" and $Hemodialysis_tube != ""'
+    code: '"NURSING//HEMODIALYSIS_TUBE" if $Hemodialysis_tube::str != "NA" and /\w/ in $Hemodialysis_tube::str'
     time: $chart_time
-    text_value: $Hemodialysis_tube
+    numeric_value: $Hemodialysis_tube::?float64
+    text_value: $Hemodialysis_tube::str
     inpatient_stay_id: $INP_NO
   basic_nursing:
-    code: '"NURSING//BASIC_NURSING" if $basic_nursing != "NA" and $basic_nursing != ""'
+    code: '"NURSING//BASIC_NURSING" if $basic_nursing != "NA" and /\w/ in $basic_nursing'
     time: $chart_time
     text_value: $basic_nursing
     inpatient_stay_id: $INP_NO
   skin_care:
-    code: '"NURSING//SKIN_CARE" if $Skin_care != "NA" and $Skin_care != ""'
+    code: '"NURSING//SKIN_CARE" if $Skin_care != "NA" and /\w/ in $Skin_care'
     time: $chart_time
     text_value: $Skin_care
     inpatient_stay_id: $INP_NO
   acral_circulation:
-    code: '"NURSING//ACRAL_CIRCULATION" if $Acral_circulation != "NA" and $Acral_circulation != ""'
+    code: '"NURSING//ACRAL_CIRCULATION" if $Acral_circulation != "NA" and /\w/ in $Acral_circulation'
     time: $chart_time
     text_value: $Acral_circulation
     inpatient_stay_id: $INP_NO
@@ -276,18 +325,22 @@ dtNursingChart:
     time: $chart_time
     numeric_value: $Fall_bed_assessment::?float64
     inpatient_stay_id: $INP_NO
+  # Scores outside the scale's defined range (RASS -5..+4, NRS 0..10, CPOT 0..8) are charting
+  # errors, e.g. negative RASS-like values in the NRS column, and are dropped.
   rass_sedation_score:
-    code: '"NURSING//RASS_SEDATION_SCORE" if $RASS_sedation_score::?float64 >= -5'
+    code: >-
+      "NURSING//RASS_SEDATION_SCORE"
+      if $RASS_sedation_score::?float64 >= -5 and $RASS_sedation_score::?float64 <= 4
     time: $chart_time
     numeric_value: $RASS_sedation_score::?float64
     inpatient_stay_id: $INP_NO
   nrs_pain_score:
-    code: '"NURSING//NRS_PAIN_SCORE" if $NRS_pain_score::?float64 >= 0'
+    code: '"NURSING//NRS_PAIN_SCORE" if $NRS_pain_score::?float64 >= 0 and $NRS_pain_score::?float64 <= 10'
     time: $chart_time
     numeric_value: $NRS_pain_score::?float64
     inpatient_stay_id: $INP_NO
   cpot_pain_score:
-    code: '"NURSING//CPOT_PAIN_SCORE" if $Cpot_pain_score::?float64 >= 0'
+    code: '"NURSING//CPOT_PAIN_SCORE" if $Cpot_pain_score::?float64 >= 0 and $Cpot_pain_score::?float64 <= 8'
     time: $chart_time
     numeric_value: $Cpot_pain_score::?float64
     inpatient_stay_id: $INP_NO
@@ -362,7 +415,7 @@ dtNursingChart:
     numeric_value: $Sputum_volume::?float64
     inpatient_stay_id: $INP_NO
   nursing_note:
-    code: '"NURSING//NOTE" if $NURSING_DESC != "NA" and $NURSING_DESC != ""'
+    code: '"NURSING//NOTE" if $NURSING_DESC != "NA" and /\w/ in $NURSING_DESC'
     time: $chart_time
     text_value: $NURSING_DESC
     inpatient_stay_id: $INP_NO
@@ -376,15 +429,19 @@ dtNursingChart:
     time: $chart_time
     inpatient_stay_id: $INP_NO
 
+# One row per patient. Follow-up answers are timed at Follow_Date; rows without one (247) produce
+# no follow-up events.
 dtOutCome:
   _table:
     join:
       dtBaseline:
         key: PATIENT_ID
-        cols: [DISCHARGE_DATE_TIME]
+        cols: [INP_NO, DISCHARGE_DATE_TIME]
   follow_up_vital_status:
     code: 'f"FOLLOW_UP_VITAL_STATUS//{$Follow_Vital}" if $Follow_Vital != "NA" and $Follow_Vital != ""'
     time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
+  # Death_Date has about day precision: in-hospital deaths typically fall ~12 h before the recorded
+  # discharge, so a stay's last events can follow MEDS_DEATH.
   death:
     code: MEDS_DEATH
     time: "(1970-01-01 @ 00:00) + $Death_Date::?float64::hours"
@@ -499,11 +556,15 @@ dtOutCome:
   discharge_department:
     code: f"DISCHARGE_DEPARTMENT//{$Discharge_Dept}"
     time: "(1970-01-01 @ 00:00) + $DISCHARGE_DATE_TIME::hours"
+    inpatient_stay_id: $INP_NO
 
 sources:
+  # The raw release version. Reserved (never treated as a bucket), interpolatable into the entries
+  # below, and stamped by `meds-extract-run` into the output's `etl_metadata.dataset_version`.
   dataset_version: "1.1"
   dataset:
+    # Zigong is credentialed: a PhysioNet account with a signed DUA for this project is required.
     - type: physionet
-      base_url: https://physionet.org/files/icu-infection-zigong-fourth/1.1
+      base_url: https://physionet.org/files/icu-infection-zigong-fourth/${sources.dataset_version}
       username: ${oc.env:DATASET_DOWNLOAD_USERNAME}
       password: ${oc.env:DATASET_DOWNLOAD_PASSWORD}

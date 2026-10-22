@@ -1,5 +1,9 @@
 name: Tests
 
+# This repo ships no Python -- only `event_configs.yaml` and the entry-point registration naming it
+# `Zigong`. Zigong is credentialed and has no open demo release, so CI runs the ETL end-to-end over a
+# small synthetic release with Zigong's exact table layout (tests/e2e_synthetic_test.py).
+
 on:
   push:
     branches: [main]
@@ -10,17 +14,30 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
+  run_tests_ubuntu:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+      fail-fast: false
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup package
         uses: ./.github/actions/setup
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
-      - name: Validate the registered configuration
-        run: uv run pytest tests/ -v
+      - name: Run tests
+        run: uv run pytest tests/ -v --junitxml=junit.xml -s

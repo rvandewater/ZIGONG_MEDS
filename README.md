@@ -1,62 +1,160 @@
-# Zigong MEDS ETL
+# Zigong MEDS Extraction ETL
 
-Configuration-only [MEDS-Extract](https://github.com/mmcdermott/MEDS_extract) ETL for the
-[Zigong Fourth People's Hospital ICU infection database v1.1](https://physionet.org/content/icu-infection-zigong-fourth/1.1/).
+[![tests](https://github.com/rvandewater/ZIGONG_MEDS/actions/workflows/tests.yaml/badge.svg)](https://github.com/rvandewater/ZIGONG_MEDS/actions/workflows/tests.yaml)
+[![synthetic ETL](https://github.com/rvandewater/ZIGONG_MEDS/actions/workflows/synthetic-etl.yaml/badge.svg)](https://github.com/rvandewater/ZIGONG_MEDS/actions/workflows/synthetic-etl.yaml)
+[![code-quality](https://github.com/rvandewater/ZIGONG_MEDS/actions/workflows/code-quality-main.yaml/badge.svg)](https://github.com/rvandewater/ZIGONG_MEDS/actions/workflows/code-quality-main.yaml)
+![python](https://img.shields.io/badge/-Python_3.11--3.13-blue?logo=python&logoColor=white)
+[![MEDS-Extract 0.7](https://img.shields.io/badge/MEDS--Extract-0.7-blue)](https://github.com/mmcdermott/MEDS_extract)
+[![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](LICENSE)
 
-## Run
+This pipeline extracts the
+[Zigong Fourth People's Hospital ICU infection database v1.1](https://physionet.org/content/icu-infection-zigong-fourth/1.1/)
+from PhysioNet into the [MEDS format](https://medical-event-data-standard.github.io/). The release holds
+2,790 ICU patients with infection, one hospital admission each, from Zigong Fourth People's Hospital in
+Sichuan, China. It was built from the
+[ETL_MEDS_Template](https://github.com/Medical-Event-Data-Standard/ETL_MEDS_Template) and uses the
+config-only layout introduced by [MEDS-Extract](https://github.com/mmcdermott/MEDS_extract) 0.7.
 
-Obtain access to the PhysioNet release, then export its credentials:
+## Usage
+
+Zigong is a credentialed dataset. You need a PhysioNet account that has signed the project's data use
+agreement.
 
 ```bash
-export DATASET_DOWNLOAD_USERNAME="$PHYSIONET_USERNAME"
-export DATASET_DOWNLOAD_PASSWORD="$PHYSIONET_PASSWORD"
-meds-extract-run spec=Zigong output_dir="$MEDS_OUTPUT_DIR"
+pip install git+https://github.com/rvandewater/ZIGONG_MEDS.git
+export DATASET_DOWNLOAD_USERNAME=$PHYSIONET_USERNAME
+export DATASET_DOWNLOAD_PASSWORD=$PHYSIONET_PASSWORD
+meds-extract-run spec=Zigong output_dir=$MEDS_OUTPUT_DIR
 ```
 
-To use files already downloaded from PhysioNet:
+When you run this, the program will:
+
+1. Download the release (seven `dt*.csv` tables, about 840 MB) from PhysioNet into
+    `$MEDS_OUTPUT_DIR/.meds_extract_run/raw_input`. Pass `download_dest_dir=$RAW_INPUT_DIR` to keep the raw
+    data somewhere durable and reuse it across runs.
+2. Build the MEDS cohort from those files and write it to `$MEDS_OUTPUT_DIR` (`data/` and `metadata/`).
+    All transformations and joins are declared in
+    [`src/Zigong_MEDS/event_configs.yaml`](src/Zigong_MEDS/event_configs.yaml).
+
+If you already have the PhysioNet release on disk, skip the download and point `input_dir` at the
+directory that contains `dtBaseline.csv`, `dtDrugs.csv`, `dtICD.csv`, `dtLab.csv`, `dtNursingChart.csv`,
+`dtOutCome.csv` and `dtTransfer.csv`:
 
 ```bash
-meds-extract-run spec=Zigong output_dir="$MEDS_OUTPUT_DIR" \
-	do_download=false input_dir="$RAW_ZIGONG_DIR"
+meds-extract-run spec=Zigong output_dir=$MEDS_OUTPUT_DIR \
+	do_download=false input_dir=/path/to/icu-infection-zigong-fourth-1.1
 ```
 
-The input directory must contain the release's `dtBaseline.csv`, `dtDrugs.csv`, `dtICD.csv`,
-`dtLab.csv`, `dtNursingChart.csv`, `dtOutCome.csv`, and `dtTransfer.csv` files.
-
-## Mapping
-
-`src/Zigong_MEDS/event_configs.yaml` converts the documented hour offsets from hospital admission
-to MEDS pseudotime using `1970-01-01` as a shared anchor. It maps demographics, admissions,
-transfers, diagnoses, laboratory results, prescriptions, nursing observations, death, and follow-up
-SF-36 responses. No external terminology mapping is claimed where the source does not document one.
-
-For a reusable mapping checklist, see [docs/MEDS_ETL_MAPPING.md](docs/MEDS_ETL_MAPPING.md).
-
-## Data caveats
-
-**Nursing chart timestamps are coarse.** In v1.1, `dtNursingChart` has about 1 million rows with a
-usable `ChartTime` but only about 23,000 distinct (patient, `ChartTime`) pairs. A typical timestamp
-covers 26 source rows, and the largest covers 266. This comes from the source release, not the ETL.
-In the MEDS output, one timestamp therefore holds many readings of the same measurement, on average
-about 15 `NURSING//HEART_RATE` values, and similarly for blood pressure, SpO2, and other vitals. The
-order of events within a timestamp carries no clinical meaning.
-
-When defining tasks or features on this dataset:
-
-- Do not rely on order within a timestamp, such as "last value before X", minute-level features, or
-    sequence models that treat event order as real time order.
-- Choose prediction times that do not fall inside a timestamp's group of events, and aggregate values
-    within a timestamp (for example mean, min, or max) rather than picking one.
-
-About 314,000 nursing rows (23%) have `ChartTime = NA` in the source and are dropped.
-
-## Synthetic validation
+To parallelize the stages, pass a runner file:
 
 ```bash
-uv pip install git+https://github.com/rvandewater/MESSY_synth.git
-MESSY-synth src/Zigong_MEDS/event_configs.yaml -o raw_synthetic/
-meds-extract-run spec=Zigong output_dir=zigong_meds_synth/ \
+printf 'parallelize:\n  n_workers: 8\n  launcher: joblib\n' >runner.yaml
+meds-extract-run spec=Zigong output_dir=$MEDS_OUTPUT_DIR stage_runner_fp=runner.yaml
+```
+
+Run `meds-extract-run --help` for every option.
+
+## How this ETL is defined
+
+The package contains no Python. The whole ETL is one MESSY (MEDS-Extract Specification Syntax YAML)
+file, [`src/Zigong_MEDS/event_configs.yaml`](src/Zigong_MEDS/event_configs.yaml). It declares:
+
+- **`sources:`**: where the raw data lives (the PhysioNet release).
+- **`etl:`**: the dataset name and sharding options.
+- **One block per raw table**: how each row becomes one or more MEDS events.
+
+`pyproject.toml` registers the file with MEDS-Extract's `MEDS_extract.pipelines` entry-point group under
+the name `Zigong`. That registration is what makes `spec=Zigong` work. No pre-MEDS step is needed:
+tables without `PATIENT_ID` (`dtLab`, `dtNursingChart`) are joined to `dtBaseline` on `INP_NO` inside the
+config.
+
+**Times.** Every source time is an offset in hours from hospital admission. The ETL places them on a
+shared pseudotime anchor, 1970-01-01 00:00 = admission, which preserves order and intervals without
+claiming a real calendar date. Each patient has exactly one admission, so offsets never collide.
+
+## Events
+
+| Table            | Event codes                                                                                                                                       | Notes                                                                                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dtBaseline`     | `HOSPITAL_ADMISSION`, `AGE_AT_ADMISSION`, `SEX//…`, `ADMISSION_DEPARTMENT//…`, `INFECTION_SITE//…`, `ICU_DISCHARGE`, `HOSPITAL_DISCHARGE`         | Age is the `numeric_value`.                                                                                                                          |
+| `dtTransfer`     | `TRANSFER_TO//{dept}`, `TRANSFER_FROM//{dept}`                                                                                                    | The reason is kept in `transfer_reason`. See [#3](https://github.com/rvandewater/ZIGONG_MEDS/issues/3).                                              |
+| `dtICD`          | `DIAGNOSIS//ICD//{code}`                                                                                                                          | Placed at hospital discharge. The clinician's description is the `text_value`; `diagnosis_sequence` and `discharge_diagnosis_status` are kept.       |
+| `dtLab`          | `LAB//{category}//{item}//{unit}`                                                                                                                 | A missing unit becomes `UNK`. `reference_range` is kept.                                                                                             |
+| `dtDrugs`        | `MEDICATION//{drug}`                                                                                                                              | Prescription time. `Formula` is the `text_value`.                                                                                                    |
+| `dtNursingChart` | `NURSING//{MEASUREMENT}` (vitals, ventilation, consciousness, GCS components, lines and tubes, risk and pain scores, intake and output, notes, …) | One code per charted column. Vital signs carry a `unit` column. GCS components carry the score as the `numeric_value` and the charted label as text. |
+| `dtOutCome`      | `MEDS_DEATH`, `FOLLOW_UP_VITAL_STATUS//…`, `SF36//{ITEM}//{answer}`, `DISCHARGE_DEPARTMENT//…`                                                    | Follow-up events are placed at `Follow_Date`; the discharge department at hospital discharge.                                                        |
+
+Every event linked to a stay carries `inpatient_stay_id` (`INP_NO`). The R-written CSVs encode missing
+values as the string `NA` or a quoted empty string; both are treated as missing, as are text entries with
+no letters or digits.
+
+## Data notes
+
+- **Coarse nursing chart timestamps.** `dtNursingChart` has about 1 million rows with a usable
+    `ChartTime` but only about 23,000 distinct (patient, `ChartTime`) pairs. A typical timestamp covers 26
+    source rows, and the largest covers 266. This comes from the source release, not the ETL. In the MEDS
+    output, one timestamp therefore holds many readings of the same measurement, on average about 15
+    `NURSING//HEART_RATE` values, and similarly for blood pressure, SpO2 and other vitals. The order of events
+    within a timestamp carries no clinical meaning. When defining tasks or features:
+    - Do not rely on order within a timestamp, such as "last value before X", minute-level features, or
+        sequence models that treat event order as real time order.
+    - Choose prediction times that do not fall inside a timestamp's group of events, and aggregate values
+        within a timestamp (for example mean, min, or max) rather than picking one.
+- **Dropped nursing rows.** 313,974 nursing rows (23%) belong to 723 stays that are not in the cohort
+    (`dtBaseline`), and all of them have `ChartTime = NA`; they are dropped. Rows charted more than 24 h before
+    admission (9,011 rows, including some corrupt offsets) or after discharge (141) are dropped too.
+- **Dropped labs.** Results timed after hospital discharge (4,415 rows, 0.3%) and placeholder values made
+    only of dots or asterisks are dropped.
+- **Coarse death dates.** `Death_Date` has about day precision. In-hospital deaths typically fall about 12 h
+    before the recorded discharge, so a stay's last events can follow `MEDS_DEATH`. See
+    [#4](https://github.com/rvandewater/ZIGONG_MEDS/issues/4).
+- **Line and tube columns** (`CVC`, `PICC`, `Gastric_tube`, …) hold the length in cm, used as the
+    `numeric_value`, or a status such as "removed" kept as text. The numeric values of `Endotracheal_intubation`
+    duplicate `Endotracheal_intubation_Depth`, so only its statuses are emitted.
+- **Bounded scores.** RASS, NRS and CPOT values outside their scales (-5..+4, 0..10, 0..8) are dropped.
+    Other vitals are not range-filtered; see [#7](https://github.com/rvandewater/ZIGONG_MEDS/issues/7).
+- **Unmapped columns.** Five nursing columns are NA in every row. `MAP`, `PSIPAP`, `R` and `FIO2` hold only
+    unit strings. `Invasive_SBP._1` is a documented technical duplicate, and `F` is documented as having no
+    clinical relevance. See [#6](https://github.com/rvandewater/ZIGONG_MEDS/issues/6).
+- **Local vocabularies.** Diagnoses use the release's Chinese national extension of ICD-10, and labs and
+    drugs use local names. No standard-terminology parents are attached yet; see
+    [#1](https://github.com/rvandewater/ZIGONG_MEDS/issues/1) and
+    [#8](https://github.com/rvandewater/ZIGONG_MEDS/issues/8). SF-36 answers are inconsistently coded in the
+    source; see [#5](https://github.com/rvandewater/ZIGONG_MEDS/issues/5).
+- **No ICU admission event.** The release records ICU discharge but not ICU entry; see
+    [#2](https://github.com/rvandewater/ZIGONG_MEDS/issues/2).
+
+## Testing
+
+Zigong has no open demo release, so there are two synthetic checks:
+
+- `tests/e2e_synthetic_test.py` writes a few fully synthetic rows with the release's exact headers and R
+    `write.csv` encoding, runs `meds-extract-run spec=Zigong` over them, and checks the events, times, values
+    and missing-value handling it produces.
+- The [Synthetic ETL workflow](.github/workflows/synthetic-etl.yaml) generates raw files straight from the
+    config with [MESSY-synth](https://pypi.org/project/MESSY-synth/) and runs the ETL over them. It fails if
+    any event block produces no events.
+
+```bash
+uv sync --group dev
+uv run pytest tests/ -v
+uv run pre-commit run --all-files
+
+# MESSY-synth needs Python >= 3.12.
+uv run --with MESSY-synth==0.0.1 MESSY-synth ./src/Zigong_MEDS/event_configs.yaml -o raw_synthetic/
+uv run meds-extract-run spec=Zigong output_dir=zigong_meds_synth/ \
 	do_download=false input_dir=raw_synthetic/
 ```
 
-The CI workflow runs this smoke test without accessing real data.
+For a reusable checklist on mapping a new dataset, see [docs/MEDS_ETL_MAPPING.md](docs/MEDS_ETL_MAPPING.md).
+
+## Citation
+
+If you use this ETL, please cite the Zigong database and its descriptor paper:
+
+- Xu, P., Chen, L., & Zhang, Z. (2022). *Critical care database comprising patients with infection at
+    Zigong Fourth People's Hospital* (version 1.1). PhysioNet. https://doi.org/10.13026/xpt9-z726
+- Xu, P., Chen, L., Zhu, Y. et al. Critical Care Database Comprising Patients With Infection. *Front.
+    Public Health* 10 (2022). https://doi.org/10.3389/fpubh.2022.852410
+
+See also [`CITATION.cff`](CITATION.cff).
