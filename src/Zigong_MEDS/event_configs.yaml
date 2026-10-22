@@ -99,7 +99,7 @@ dtLab:
   lab_result:
     code: >-
       f"LAB//{$Category}//{$Item}//{$Unit if $Unit != '' else 'UNK'}"
-      if /[^.*\s]/ in $LabValue
+      if /[^.*\s]/ in $LabValue::str
     time: "(1970-01-01 @ 00:00) + $LabTime::hours if $LabTime <= $DISCHARGE_DATE_TIME"
     numeric_value: $LabValue::?float64
     text_value: $LabValue
