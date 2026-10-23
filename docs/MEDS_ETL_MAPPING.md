@@ -13,13 +13,13 @@ Use this checklist when adapting a configuration-only MEDS-Extract ETL.
 
 For every source table, record:
 
-| Source fact | MEDS decision |
-| --- | --- |
-| Patient key / encounter key | `subject_id` expression and any required join |
-| Event time and its origin | timestamp expression, including an explicit pseudotime anchor for relative offsets |
-| Observation | `code`, `numeric_value`, `text_value`, and only documented extension columns |
-| Vocabulary / label | metadata description or parent code, only when a documented map exists |
-| Missing, invalid, or ambiguous values | whether to drop, retain as text, or use a documented sentinel |
+| Source fact                           | MEDS decision                                                                      |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| Patient key / encounter key           | `subject_id` expression and any required join                                      |
+| Event time and its origin             | timestamp expression, including an explicit pseudotime anchor for relative offsets |
+| Observation                           | `code`, `numeric_value`, `text_value`, and only documented extension columns       |
+| Vocabulary / label                    | metadata description or parent code, only when a documented map exists             |
+| Missing, invalid, or ambiguous values | whether to drop, retain as text, or use a documented sentinel                      |
 
 Never invent a clinical mapping. Prefer a readable local code (for example `LAB//{category}//{item}//{unit}`) to an unsupported standard-vocabulary parent.
 
@@ -28,7 +28,7 @@ Never invent a clinical mapping. Prefer a readable local code (for example `LAB/
 MEDS requires dates or datetimes, while deidentified datasets often store offsets. Convert an offset in hours with a fixed, documented anchor:
 
 ```yaml
-time: '1970-01-01 @ 00:00 + $offset::hours'
+time: 1970-01-01 @ 00:00 + $offset::hours
 ```
 
 The anchor preserves intervals and ordering without implying a real admission date. Use the same anchor everywhere. Guard source values known to be invalid or outside the documented encounter window; a bad offset must become a null timestamp and be dropped, not become a plausible-looking event decades away.

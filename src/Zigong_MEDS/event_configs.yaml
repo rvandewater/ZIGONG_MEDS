@@ -1,9 +1,26 @@
-# Zigong Fourth People's Hospital ICU infection database (PhysioNet v1.1) to MEDS.
-# All source times are deidentified hours from hospital admission. 1970-01-01 is
-# a pseudotime anchor: it preserves ordering and intervals without asserting a
-# real calendar date.
+# The complete Zigong Fourth People's Hospital ICU infection database (PhysioNet v1.1) MEDS ETL.
+# This one file *is* the package: `sources:` says where the raw data comes from, `etl:` supplies
+# the run knobs, and every other top-level key is a raw table whose events are extracted from it.
+# It is registered with `meds-extract-run` under the name `Zigong` (see this repo's
+# `pyproject.toml`), so the whole ETL is one command:
+#
+#     meds-extract-run spec=Zigong output_dir=$MEDS_OUTPUT_DIR
+#
+# Conventions used throughout:
+#
+# - All source times are deidentified hours from hospital admission. 1970-01-01 is a pseudotime
+#   anchor: it preserves ordering and intervals without asserting a real calendar date. Every
+#   patient has exactly one admission in v1.1, so per-admission offsets never collide.
+# - The release was written by R's write.csv: a missing value is the bare string NA, and missing
+#   text in several dtNursingChart and dtLab columns is a quoted empty string. Neither is read as
+#   null, so every code and text value below guards against both. Free-text nursing fields also
+#   require a word character, which drops whitespace-, DEL- and punctuation-only entries.
+# - Codes keep the source's own vocabulary. No standard-terminology parent is claimed where the
+#   release does not document one.
 
 etl:
+  # `meds-extract-run` defaults the dataset name to the registered entry-point name; this fallback
+  # makes the spec self-describing when it is resolved by `pkg://` reference or filesystem path.
   dataset_name: Zigong
   n_subjects_per_shard: 1000
 
@@ -16,7 +33,7 @@ dtBaseline:
     time: 1970-01-01 @ 00:00
     inpatient_stay_id: $INP_NO
   age_at_admission:
-    code: AGE_AT_ADMISSION
+    code: '"AGE_AT_ADMISSION" if $Age::?float64 >= 0'
     time: 1970-01-01 @ 00:00
     numeric_value: $Age::?float64
     inpatient_stay_id: $INP_NO
@@ -34,18 +51,25 @@ dtBaseline:
     inpatient_stay_id: $INP_NO
   icu_discharge:
     code: ICU_DISCHARGE
-    time: '(1970-01-01 @ 00:00) + $ICU_discharge_time::hours'
+    time: "(1970-01-01 @ 00:00) + $ICU_discharge_time::hours"
     inpatient_stay_id: $INP_NO
   hospital_discharge:
     code: HOSPITAL_DISCHARGE
-    time: '(1970-01-01 @ 00:00) + $DISCHARGE_DATE_TIME::hours'
+    time: "(1970-01-01 @ 00:00) + $DISCHARGE_DATE_TIME::hours"
     inpatient_stay_id: $INP_NO
 
 dtDrugs:
+  # dtDrugs has no INP_NO; with one admission per patient the stay is recovered from dtBaseline.
+  _table:
+    join:
+      dtBaseline:
+        key: PATIENT_ID
+        cols: [INP_NO]
   prescription:
     code: f"MEDICATION//{$DrugName}"
-    time: '(1970-01-01 @ 00:00) + $Drug_time::hours'
+    time: "(1970-01-01 @ 00:00) + $Drug_time::hours"
     text_value: $Formula
+    inpatient_stay_id: $INP_NO
 
 dtICD:
   _table:
@@ -54,15 +78,14 @@ dtICD:
         key: INP_NO
         cols: [DISCHARGE_DATE_TIME]
   diagnosis:
-    code: f"DIAGNOSIS//ICD//{$ICD_Code}"
-    time: '(1970-01-01 @ 00:00) + $DISCHARGE_DATE_TIME::hours'
+    code: 'f"DIAGNOSIS//ICD//{$ICD_Code}" if $ICD_Code != "NA"'
+    time: "(1970-01-01 @ 00:00) + $DISCHARGE_DATE_TIME::hours"
+    # ICD_desc is the clinician's free-text diagnosis, not the code's title: most codes carry
+    # several distinct descriptions, so it stays per-event and is not used as code metadata.
     text_value: $ICD_desc
     diagnosis_sequence: $Diagnosis_seq
-    discharge_diagnosis_status: $Status_Discharge
+    discharge_diagnosis_status: '$Status_Discharge if $Status_Discharge != "NA"'
     inpatient_stay_id: $INP_NO
-    _metadata:
-      _self:
-        description: $ICD_desc
 
 dtLab:
   _table:
@@ -70,26 +93,37 @@ dtLab:
       dtBaseline:
         key: INP_NO
         cols: [PATIENT_ID, DISCHARGE_DATE_TIME]
+  # Results timed after hospital discharge (~0.3% of rows) are dropped; pre-admission results
+  # (down to about -24 h) are kept. Placeholder values made only of dots or asterisks (".....",
+  # "****") carry no result and are dropped.
   lab_result:
-    code: f"LAB//{$Category}//{$Item}//{$Unit ?? 'UNK'}"
-    time: '(1970-01-01 @ 00:00) + $LabTime::hours if $LabTime <= $DISCHARGE_DATE_TIME'
+    code: >-
+      f"LAB//{$Category}//{$Item}//{$Unit if $Unit != '' else 'UNK'}"
+      if /[^.*\s]/ in $LabValue::str
+    time: "(1970-01-01 @ 00:00) + $LabTime::hours if $LabTime <= $DISCHARGE_DATE_TIME"
     numeric_value: $LabValue::?float64
     text_value: $LabValue
-    reference_range: $Ref
+    reference_range: '$Ref if $Ref != ""'
     inpatient_stay_id: $INP_NO
 
 dtTransfer:
   transfer_start:
     code: f"TRANSFER_TO//{$TransferDept}"
-    time: '(1970-01-01 @ 00:00) + $StartTime::hours'
+    time: "(1970-01-01 @ 00:00) + $StartTime::hours"
     transfer_reason: $StartReason
     inpatient_stay_id: $INP_NO
   transfer_end:
     code: f"TRANSFER_FROM//{$TransferDept}"
-    time: '(1970-01-01 @ 00:00) + $StopTime::hours'
+    time: "(1970-01-01 @ 00:00) + $StopTime::hours"
     transfer_reason: $StopReason
     inpatient_stay_id: $INP_NO
 
+# Every row with ChartTime = NA belongs to a stay that is not in dtBaseline, so the inner join
+# drops them. Chart times more than 24 h before admission (including some corrupt offsets of
+# millions of hours) or after discharge are dropped too. Several columns are not mapped: Rhythm,
+# Lower_extremity_blood_pressure_monitoring, Left/Right_pupil_reflex and ETCO2 are NA in every
+# row; MAP, PSIPAP, R and FIO2 hold only unit strings; Invasive_SBP._1 is a documented technical
+# duplicate; F is documented as having no clinical relevance.
 dtNursingChart:
   _table:
     join:
@@ -157,7 +191,7 @@ dtNursingChart:
     numeric_value: $blood_sugar::?float64
     inpatient_stay_id: $INP_NO
   oxygen_inhalation_mode:
-    code: '"NURSING//OXYGEN_INHALATION_MODE" if $Oxygen_inhalation_mode != "NA"'
+    code: '"NURSING//OXYGEN_INHALATION_MODE" if $Oxygen_inhalation_mode != "NA" and /\w/ in $Oxygen_inhalation_mode'
     time: $chart_time
     text_value: $Oxygen_inhalation_mode
     inpatient_stay_id: $INP_NO
@@ -167,7 +201,7 @@ dtNursingChart:
     numeric_value: $Oxygen_flow::?float64
     inpatient_stay_id: $INP_NO
   ventilation_mode:
-    code: '"NURSING//VENTILATION_MODE" if $Breathing_pattern != "NA"'
+    code: '"NURSING//VENTILATION_MODE" if $Breathing_pattern != "NA" and /\w/ in $Breathing_pattern'
     time: $chart_time
     text_value: $Breathing_pattern
     inpatient_stay_id: $INP_NO
@@ -176,19 +210,13 @@ dtNursingChart:
     time: $chart_time
     numeric_value: $Vt_setting::?float64
     inpatient_stay_id: $INP_NO
-  inspired_oxygen_fraction:
-    code: '"NURSING//INSPIRED_OXYGEN_FRACTION" if $FIO2::?float64 >= 0'
-    time: $chart_time
-    numeric_value: $FIO2::?float64
-    unit: '"%"'
-    inpatient_stay_id: $INP_NO
   monitored_tidal_volume:
     code: '"NURSING//MONITORED_TIDAL_VOLUME" if $Vt_Supervisor::?float64 >= 0'
     time: $chart_time
     numeric_value: $Vt_Supervisor::?float64
     inpatient_stay_id: $INP_NO
   consciousness:
-    code: '"NURSING//CONSCIOUSNESS" if $consciousness != "NA"'
+    code: '"NURSING//CONSCIOUSNESS" if $consciousness != "NA" and /\w/ in $consciousness'
     time: $chart_time
     text_value: $consciousness
     inpatient_stay_id: $INP_NO
@@ -202,63 +230,83 @@ dtNursingChart:
     time: $chart_time
     numeric_value: $Right_pupil_size::?float64
     inpatient_stay_id: $INP_NO
+  # GCS components are charted as "<score>→<Chinese label>", e.g. "3→呼唤睁眼". The leading score
+  # is the numeric_value; non-scorable entries ("T" intubated, "S" motor disorder) keep only the
+  # text.
   gcs_eye_response:
-    code: '"NURSING//GCS_EYE_RESPONSE" if $`open_one''s_eyes` != "NA"'
+    code: '"NURSING//GCS_EYE_RESPONSE" if $`open_one''s_eyes` != "NA" and /\w/ in $`open_one''s_eyes`'
     time: $chart_time
+    numeric_value: '(extract group 1 of /^\s*([1-4])\s*[^\d\s]/ from $`open_one''s_eyes`)::?float64'
     text_value: $`open_one's_eyes`
     inpatient_stay_id: $INP_NO
   gcs_motor_response:
-    code: '"NURSING//GCS_MOTOR_RESPONSE" if $motion != "NA"'
+    code: '"NURSING//GCS_MOTOR_RESPONSE" if $motion != "NA" and /\w/ in $motion'
     time: $chart_time
+    numeric_value: '(extract group 1 of /^\s*([1-6])\s*[^\d\s]/ from $motion)::?float64'
     text_value: $motion
     inpatient_stay_id: $INP_NO
   gcs_verbal_response:
-    code: '"NURSING//GCS_VERBAL_RESPONSE" if $language != "NA"'
+    code: '"NURSING//GCS_VERBAL_RESPONSE" if $language != "NA" and /\w/ in $language'
     time: $chart_time
+    numeric_value: '(extract group 1 of /^\s*([1-5])\s*[^\d\s]/ from $language)::?float64'
     text_value: $language
     inpatient_stay_id: $INP_NO
+  # Line and tube columns hold the charted length in cm, or a status such as "拔除" (removed) or
+  # "不详" (unknown); the length is the numeric_value and the raw entry stays in text_value. The
+  # `::str` casts keep the text guards valid whichever dtype the column is inferred as.
   cvc:
-    code: '"NURSING//CVC" if $CVC != "NA"'
+    code: '"NURSING//CVC" if $CVC::str != "NA" and /\w/ in $CVC::str'
     time: $chart_time
-    text_value: $CVC
+    numeric_value: $CVC::?float64
+    text_value: $CVC::str
     inpatient_stay_id: $INP_NO
   picc:
-    code: '"NURSING//PICC" if $PICC != "NA"'
+    code: '"NURSING//PICC" if $PICC::str != "NA" and /\w/ in $PICC::str'
     time: $chart_time
-    text_value: $PICC
+    numeric_value: $PICC::?float64
+    text_value: $PICC::str
     inpatient_stay_id: $INP_NO
+  # Every numeric Endotracheal_intubation value equals Endotracheal_intubation_Depth on the same
+  # row, so only its non-numeric statuses (e.g. "拔除", removed) are emitted here; the depth is
+  # emitted by endotracheal_intubation_depth below.
   endotracheal_intubation:
-    code: '"NURSING//ENDOTRACHEAL_INTUBATION" if $Endotracheal_intubation != "NA"'
+    code: >-
+      "NURSING//ENDOTRACHEAL_INTUBATION"
+      if $Endotracheal_intubation::str != "NA" and /\w/ in $Endotracheal_intubation::str
+      and /[^0-9.\s]/ in $Endotracheal_intubation::str
     time: $chart_time
-    text_value: $Endotracheal_intubation
+    text_value: $Endotracheal_intubation::str
     inpatient_stay_id: $INP_NO
   gastric_tube:
-    code: '"NURSING//GASTRIC_TUBE" if $Gastric_tube != "NA"'
+    code: '"NURSING//GASTRIC_TUBE" if $Gastric_tube::str != "NA" and /\w/ in $Gastric_tube::str'
     time: $chart_time
-    text_value: $Gastric_tube
+    numeric_value: $Gastric_tube::?float64
+    text_value: $Gastric_tube::str
     inpatient_stay_id: $INP_NO
   medium_length_catheter:
-    code: '"NURSING//MEDIUM_LENGTH_CATHETER" if $Medium_length_catheter != "NA"'
+    code: '"NURSING//MEDIUM_LENGTH_CATHETER" if $Medium_length_catheter::str != "NA" and /\w/ in $Medium_length_catheter::str'
     time: $chart_time
-    text_value: $Medium_length_catheter
+    numeric_value: $Medium_length_catheter::?float64
+    text_value: $Medium_length_catheter::str
     inpatient_stay_id: $INP_NO
   hemodialysis_tube:
-    code: '"NURSING//HEMODIALYSIS_TUBE" if $Hemodialysis_tube != "NA"'
+    code: '"NURSING//HEMODIALYSIS_TUBE" if $Hemodialysis_tube::str != "NA" and /\w/ in $Hemodialysis_tube::str'
     time: $chart_time
-    text_value: $Hemodialysis_tube
+    numeric_value: $Hemodialysis_tube::?float64
+    text_value: $Hemodialysis_tube::str
     inpatient_stay_id: $INP_NO
   basic_nursing:
-    code: '"NURSING//BASIC_NURSING" if $basic_nursing != "NA"'
+    code: '"NURSING//BASIC_NURSING" if $basic_nursing != "NA" and /\w/ in $basic_nursing'
     time: $chart_time
     text_value: $basic_nursing
     inpatient_stay_id: $INP_NO
   skin_care:
-    code: '"NURSING//SKIN_CARE" if $Skin_care != "NA"'
+    code: '"NURSING//SKIN_CARE" if $Skin_care != "NA" and /\w/ in $Skin_care'
     time: $chart_time
     text_value: $Skin_care
     inpatient_stay_id: $INP_NO
   acral_circulation:
-    code: '"NURSING//ACRAL_CIRCULATION" if $Acral_circulation != "NA"'
+    code: '"NURSING//ACRAL_CIRCULATION" if $Acral_circulation != "NA" and /\w/ in $Acral_circulation'
     time: $chart_time
     text_value: $Acral_circulation
     inpatient_stay_id: $INP_NO
@@ -277,18 +325,22 @@ dtNursingChart:
     time: $chart_time
     numeric_value: $Fall_bed_assessment::?float64
     inpatient_stay_id: $INP_NO
+  # Scores outside the scale's defined range (RASS -5..+4, NRS 0..10, CPOT 0..8) are charting
+  # errors, e.g. negative RASS-like values in the NRS column, and are dropped.
   rass_sedation_score:
-    code: '"NURSING//RASS_SEDATION_SCORE" if $RASS_sedation_score::?float64 >= -5'
+    code: >-
+      "NURSING//RASS_SEDATION_SCORE"
+      if $RASS_sedation_score::?float64 >= -5 and $RASS_sedation_score::?float64 <= 4
     time: $chart_time
     numeric_value: $RASS_sedation_score::?float64
     inpatient_stay_id: $INP_NO
   nrs_pain_score:
-    code: '"NURSING//NRS_PAIN_SCORE" if $NRS_pain_score::?float64 >= 0'
+    code: '"NURSING//NRS_PAIN_SCORE" if $NRS_pain_score::?float64 >= 0 and $NRS_pain_score::?float64 <= 10'
     time: $chart_time
     numeric_value: $NRS_pain_score::?float64
     inpatient_stay_id: $INP_NO
   cpot_pain_score:
-    code: '"NURSING//CPOT_PAIN_SCORE" if $Cpot_pain_score::?float64 >= 0'
+    code: '"NURSING//CPOT_PAIN_SCORE" if $Cpot_pain_score::?float64 >= 0 and $Cpot_pain_score::?float64 <= 8'
     time: $chart_time
     numeric_value: $Cpot_pain_score::?float64
     inpatient_stay_id: $INP_NO
@@ -363,7 +415,7 @@ dtNursingChart:
     numeric_value: $Sputum_volume::?float64
     inpatient_stay_id: $INP_NO
   nursing_note:
-    code: '"NURSING//NOTE" if $NURSING_DESC != "NA"'
+    code: '"NURSING//NOTE" if $NURSING_DESC != "NA" and /\w/ in $NURSING_DESC'
     time: $chart_time
     text_value: $NURSING_DESC
     inpatient_stay_id: $INP_NO
@@ -377,129 +429,142 @@ dtNursingChart:
     time: $chart_time
     inpatient_stay_id: $INP_NO
 
+# One row per patient. Follow-up answers are timed at Follow_Date; rows without one (247) produce
+# no follow-up events.
 dtOutCome:
+  _table:
+    join:
+      dtBaseline:
+        key: PATIENT_ID
+        cols: [INP_NO, DISCHARGE_DATE_TIME]
   follow_up_vital_status:
-    code: f"FOLLOW_UP_VITAL_STATUS//{$Follow_Vital}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"FOLLOW_UP_VITAL_STATUS//{$Follow_Vital}" if $Follow_Vital != "NA" and $Follow_Vital != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
+  # Death_Date has about day precision: in-hospital deaths typically fall ~12 h before the recorded
+  # discharge, so a stay's last events can follow MEDS_DEATH.
   death:
     code: MEDS_DEATH
-    time: '(1970-01-01 @ 00:00) + $Death_Date::?float64::hours'
+    time: "(1970-01-01 @ 00:00) + $Death_Date::?float64::hours"
   sf36_general_health:
-    code: f"SF36//GENERAL_HEALTH//{$SF36_GeneralHeath}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//GENERAL_HEALTH//{$SF36_GeneralHeath}" if $SF36_GeneralHeath != "NA" and $SF36_GeneralHeath != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_sicker_than_others:
-    code: f"SF36//SICKER_THAN_OTHERS//{$SF36_GH_SickerEasierThanOthers}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//SICKER_THAN_OTHERS//{$SF36_GH_SickerEasierThanOthers}" if $SF36_GH_SickerEasierThanOthers != "NA" and $SF36_GH_SickerEasierThanOthers != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_healthier_than_others:
-    code: f"SF36//HEALTHIER_THAN_OTHERS//{$SF36_GH_HeathyasOthers}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//HEALTHIER_THAN_OTHERS//{$SF36_GH_HeathyasOthers}" if $SF36_GH_HeathyasOthers != "NA" and $SF36_GH_HeathyasOthers != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_health_get_worse:
-    code: f"SF36//HEALTH_GET_WORSE//{$SF36_GH_GetWorse}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//HEALTH_GET_WORSE//{$SF36_GH_GetWorse}" if $SF36_GH_GetWorse != "NA" and $SF36_GH_GetWorse != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_excellent_health:
-    code: f"SF36//EXCELLENT_HEALTH//{$SF36_GH_ExcellentHealth}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EXCELLENT_HEALTH//{$SF36_GH_ExcellentHealth}" if $SF36_GH_ExcellentHealth != "NA" and $SF36_GH_ExcellentHealth != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_vigorous_activity:
-    code: f"SF36//ACTIVITY_LIMIT_VIGOROUS//{$SF36_ActivityLimit_VigorousActivity}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_VIGOROUS//{$SF36_ActivityLimit_VigorousActivity}" if $SF36_ActivityLimit_VigorousActivity != "NA" and $SF36_ActivityLimit_VigorousActivity != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_moderate_activity:
-    code: f"SF36//ACTIVITY_LIMIT_MODERATE//{$SF36_ActivityLimit_ModerateActivity}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_MODERATE//{$SF36_ActivityLimit_ModerateActivity}" if $SF36_ActivityLimit_ModerateActivity != "NA" and $SF36_ActivityLimit_ModerateActivity != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_lifting_groceries:
-    code: f"SF36//ACTIVITY_LIMIT_LIFTING_GROCERIES//{$SF36_ActivityLimit_LiftingGroceries}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_LIFTING_GROCERIES//{$SF36_ActivityLimit_LiftingGroceries}" if $SF36_ActivityLimit_LiftingGroceries != "NA" and $SF36_ActivityLimit_LiftingGroceries != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_climbing_several_flights:
-    code: f"SF36//ACTIVITY_LIMIT_CLIMBING_SEVERAL_FLIGHTS//{$SF36_ActivityLimit_ClimingSeveralFlights}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_CLIMBING_SEVERAL_FLIGHTS//{$SF36_ActivityLimit_ClimingSeveralFlights}" if $SF36_ActivityLimit_ClimingSeveralFlights != "NA" and $SF36_ActivityLimit_ClimingSeveralFlights != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_climbing_one_flight:
-    code: f"SF36//ACTIVITY_LIMIT_CLIMBING_ONE_FLIGHT//{$SF36_ActivityLimit_ClimingOneFlight}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_CLIMBING_ONE_FLIGHT//{$SF36_ActivityLimit_ClimingOneFlight}" if $SF36_ActivityLimit_ClimingOneFlight != "NA" and $SF36_ActivityLimit_ClimingOneFlight != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_bending_kneeling_stooping:
-    code: f"SF36//ACTIVITY_LIMIT_BENDING_KNEELING_STOOPING//{$SF36_ActivityLimit_BendingKneelStoop}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_BENDING_KNEELING_STOOPING//{$SF36_ActivityLimit_BendingKneelStoop}" if $SF36_ActivityLimit_BendingKneelStoop != "NA" and $SF36_ActivityLimit_BendingKneelStoop != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_walking_more_than_1500m:
-    code: f"SF36//ACTIVITY_LIMIT_WALKING_MORE_THAN_1500M//{$SF36_ActivityLimit_WalkingMore1500M}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_WALKING_MORE_THAN_1500M//{$SF36_ActivityLimit_WalkingMore1500M}" if $SF36_ActivityLimit_WalkingMore1500M != "NA" and $SF36_ActivityLimit_WalkingMore1500M != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_walking_1000m:
-    code: f"SF36//ACTIVITY_LIMIT_WALKING_1000M//{$SF36_ActivityLimit_Walking1000M}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_WALKING_1000M//{$SF36_ActivityLimit_Walking1000M}" if $SF36_ActivityLimit_Walking1000M != "NA" and $SF36_ActivityLimit_Walking1000M != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_walking_100m:
-    code: f"SF36//ACTIVITY_LIMIT_WALKING_100M//{$SF36_ActivityLimit_Walking100M}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_WALKING_100M//{$SF36_ActivityLimit_Walking100M}" if $SF36_ActivityLimit_Walking100M != "NA" and $SF36_ActivityLimit_Walking100M != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_bathing_dressing:
-    code: f"SF36//ACTIVITY_LIMIT_BATHING_DRESSING//{$SF36_ActivityLimit_BathingDressing}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ACTIVITY_LIMIT_BATHING_DRESSING//{$SF36_ActivityLimit_BathingDressing}" if $SF36_ActivityLimit_BathingDressing != "NA" and $SF36_ActivityLimit_BathingDressing != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_body_pain:
-    code: f"SF36//BODY_PAIN//{$SF36_Pain_BodyPainPast4wk}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//BODY_PAIN//{$SF36_Pain_BodyPainPast4wk}" if $SF36_Pain_BodyPainPast4wk != "NA" and $SF36_Pain_BodyPainPast4wk != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_pain_interferes_housework:
-    code: f"SF36//PAIN_INTERFERES_HOUSEWORK//{$SF36_Pain_BodyPainPast4wkInterHousework}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//PAIN_INTERFERES_HOUSEWORK//{$SF36_Pain_BodyPainPast4wkInterHousework}" if $SF36_Pain_BodyPainPast4wkInterHousework != "NA" and $SF36_Pain_BodyPainPast4wkInterHousework != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_physical_health_cut_work:
-    code: f"SF36//PHYSICAL_HEALTH_CUT_WORK//{$SF36_PhysicalHeath_CutWork}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//PHYSICAL_HEALTH_CUT_WORK//{$SF36_PhysicalHeath_CutWork}" if $SF36_PhysicalHeath_CutWork != "NA" and $SF36_PhysicalHeath_CutWork != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_physical_health_accomplish_less:
-    code: f"SF36//PHYSICAL_HEALTH_ACCOMPLISH_LESS//{$SF36_PhysicalHeath_AccomplishLess}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//PHYSICAL_HEALTH_ACCOMPLISH_LESS//{$SF36_PhysicalHeath_AccomplishLess}" if $SF36_PhysicalHeath_AccomplishLess != "NA" and $SF36_PhysicalHeath_AccomplishLess != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_physical_health_limited_work:
-    code: f"SF36//PHYSICAL_HEALTH_LIMITED_WORK//{$SF36_PhysicalHeath_LimitedWork}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//PHYSICAL_HEALTH_LIMITED_WORK//{$SF36_PhysicalHeath_LimitedWork}" if $SF36_PhysicalHeath_LimitedWork != "NA" and $SF36_PhysicalHeath_LimitedWork != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_physical_health_difficult_work:
-    code: f"SF36//PHYSICAL_HEALTH_DIFFICULT_WORK//{$SF36_PhysicalHeath_DiffiPerformingWork}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//PHYSICAL_HEALTH_DIFFICULT_WORK//{$SF36_PhysicalHeath_DiffiPerformingWork}" if $SF36_PhysicalHeath_DiffiPerformingWork != "NA" and $SF36_PhysicalHeath_DiffiPerformingWork != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_nervous:
-    code: f"SF36//EMOTIONAL_NERVOUS//{$SF36_Emotional_Nervous}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_NERVOUS//{$SF36_Emotional_Nervous}" if $SF36_Emotional_Nervous != "NA" and $SF36_Emotional_Nervous != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_down_nothing_cheer:
-    code: f"SF36//EMOTIONAL_DOWN_NOTHING_CHEER//{$SF36_Emotional_DownNothingCheer}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_DOWN_NOTHING_CHEER//{$SF36_Emotional_DownNothingCheer}" if $SF36_Emotional_DownNothingCheer != "NA" and $SF36_Emotional_DownNothingCheer != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_calm:
-    code: f"SF36//EMOTIONAL_CALM//{$SF36_Emotional_Calm}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_CALM//{$SF36_Emotional_Calm}" if $SF36_Emotional_Calm != "NA" and $SF36_Emotional_Calm != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_downhearted:
-    code: f"SF36//EMOTIONAL_DOWNHEARTED//{$SF36_Emotional_DownHearted}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_DOWNHEARTED//{$SF36_Emotional_DownHearted}" if $SF36_Emotional_DownHearted != "NA" and $SF36_Emotional_DownHearted != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_happy:
-    code: f"SF36//EMOTIONAL_HAPPY//{$SF36_Emotional_HappyPerson}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_HAPPY//{$SF36_Emotional_HappyPerson}" if $SF36_Emotional_HappyPerson != "NA" and $SF36_Emotional_HappyPerson != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_energy:
-    code: f"SF36//EMOTIONAL_ENERGY//{$SF36_Emotional_aLotEnergy}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_ENERGY//{$SF36_Emotional_aLotEnergy}" if $SF36_Emotional_aLotEnergy != "NA" and $SF36_Emotional_aLotEnergy != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_pep:
-    code: f"SF36//EMOTIONAL_PEP//{$SF36_Emotional_FullPep}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_PEP//{$SF36_Emotional_FullPep}" if $SF36_Emotional_FullPep != "NA" and $SF36_Emotional_FullPep != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_worn_out:
-    code: f"SF36//EMOTIONAL_WORN_OUT//{$SF36_Emotional_WornOut}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_WORN_OUT//{$SF36_Emotional_WornOut}" if $SF36_Emotional_WornOut != "NA" and $SF36_Emotional_WornOut != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_emotional_tired:
-    code: f"SF36//EMOTIONAL_TIRED//{$SF36_Emotional_Tired}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//EMOTIONAL_TIRED//{$SF36_Emotional_Tired}" if $SF36_Emotional_Tired != "NA" and $SF36_Emotional_Tired != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_social_activity_emotional_or_physical:
-    code: f"SF36//SOCIAL_ACTIVITY_EMOTIONAL_OR_PHYSICAL//{$SF36_4wksSocialActivityEmotionOrPhysical}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//SOCIAL_ACTIVITY_EMOTIONAL_OR_PHYSICAL//{$SF36_4wksSocialActivityEmotionOrPhysical}" if $SF36_4wksSocialActivityEmotionOrPhysical != "NA" and $SF36_4wksSocialActivityEmotionOrPhysical != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_no_interference_social_activity:
-    code: f"SF36//NO_INTERFERENCE_SOCIAL_ACTIVITY//{$SF36_NoInfSocialActivity}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//NO_INTERFERENCE_SOCIAL_ACTIVITY//{$SF36_NoInfSocialActivity}" if $SF36_NoInfSocialActivity != "NA" and $SF36_NoInfSocialActivity != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_reduced_time_emotional_or_physical:
-    code: f"SF36//REDUCED_TIME_EMOTIONAL_OR_PHYSICAL//{$SF36_ReducedTime4wksSocialActivityEmotion}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//REDUCED_TIME_EMOTIONAL_OR_PHYSICAL//{$SF36_ReducedTime4wksSocialActivityEmotion}" if $SF36_ReducedTime4wksSocialActivityEmotion != "NA" and $SF36_ReducedTime4wksSocialActivityEmotion != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_reduced_amount_emotional_or_physical:
-    code: f"SF36//REDUCED_AMOUNT_EMOTIONAL_OR_PHYSICAL//{$SF36_ReducedAmount4wksSocialActivityEmotion}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//REDUCED_AMOUNT_EMOTIONAL_OR_PHYSICAL//{$SF36_ReducedAmount4wksSocialActivityEmotion}" if $SF36_ReducedAmount4wksSocialActivityEmotion != "NA" and $SF36_ReducedAmount4wksSocialActivityEmotion != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_reduced_quality_emotional_or_physical:
-    code: f"SF36//REDUCED_QUALITY_EMOTIONAL_OR_PHYSICAL//{$SF36_ReducedQuality4wksSocialActivityEmotion}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//REDUCED_QUALITY_EMOTIONAL_OR_PHYSICAL//{$SF36_ReducedQuality4wksSocialActivityEmotion}" if $SF36_ReducedQuality4wksSocialActivityEmotion != "NA" and $SF36_ReducedQuality4wksSocialActivityEmotion != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   sf36_one_year_health_comparison:
-    code: f"SF36//ONE_YEAR_HEALTH_COMPARISON//{$SF36_OneYearCompareHealthCondition}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    code: 'f"SF36//ONE_YEAR_HEALTH_COMPARISON//{$SF36_OneYearCompareHealthCondition}" if $SF36_OneYearCompareHealthCondition != "NA" and $SF36_OneYearCompareHealthCondition != ""'
+    time: "(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours"
   discharge_department:
     code: f"DISCHARGE_DEPARTMENT//{$Discharge_Dept}"
-    time: '(1970-01-01 @ 00:00) + $Follow_Date::?float64::hours'
+    time: "(1970-01-01 @ 00:00) + $DISCHARGE_DATE_TIME::hours"
+    inpatient_stay_id: $INP_NO
 
 sources:
+  # The raw release version. Reserved (never treated as a bucket), interpolatable into the entries
+  # below, and stamped by `meds-extract-run` into the output's `etl_metadata.dataset_version`.
   dataset_version: "1.1"
   dataset:
+    # Zigong is credentialed: a PhysioNet account with a signed DUA for this project is required.
     - type: physionet
-      base_url: https://physionet.org/files/icu-infection-zigong-fourth/1.1
+      base_url: https://physionet.org/files/icu-infection-zigong-fourth/${sources.dataset_version}
       username: ${oc.env:DATASET_DOWNLOAD_USERNAME}
       password: ${oc.env:DATASET_DOWNLOAD_PASSWORD}
