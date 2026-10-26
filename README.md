@@ -153,7 +153,9 @@ uv run meds-extract-run spec=Zigong output_dir=zigong_meds_synth/ \
 	do_download=false input_dir=raw_synthetic/
 ```
 
-For a reusable checklist on mapping a new dataset, see [docs/MEDS_ETL_MAPPING.md](docs/MEDS_ETL_MAPPING.md).
+For a reusable checklist on mapping a new dataset, see the
+[dataset mapping checklist](https://github.com/rvandewater/ETL_MEDS_Template/blob/main/docs/MEDS_ETL_MAPPING.md)
+in ETL_MEDS_Template.
 
 ## Citation
 
