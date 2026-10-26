@@ -1,64 +1,23 @@
-cff-version: 1.2.0
-title: Zigong MEDS ETL
-message: >-
-  If you use this software, please cite it using the
-  metadata from this file, and cite the Zigong database itself
-  (see references).
-type: software
+abstract: A MEDS-Extract powered ETL pipeline that converts the Zigong Fourth People's
+  Hospital ICU infection database v1.1 from PhysioNet into the Medical Event Data
+  Standard (MEDS).
 authors:
-  - given-names: Robin
-    family-names: van de Water
-    email: rpv2114@cumc.columbia.edu
-    orcid: 'https://orcid.org/0000-0002-2895-4872'
-repository-code: >-
-  https://github.com/rvandewater/ZIGONG_MEDS
-abstract: >
-  A MEDS-Extract powered ETL pipeline that converts the
-  Zigong Fourth People's Hospital ICU infection database v1.1
-  from PhysioNet into the Medical Event Data Standard (MEDS).
+- family-names: van de Water
+  given-names: Robin
+  orcid: 0000-0002-2895-4872
+cff-version: 1.2.0
+date-released: '2026-10-26'
+doi: 10.5281/zenodo.23676570
 keywords:
-  - MEDS
-  - ETL
-  - electronic health records
-  - intensive care
-  - Zigong
-license: MIT
-references:
-  - type: dataset
-    title: >-
-      Critical care database comprising patients with infection
-      at Zigong Fourth People's Hospital (version 1.1)
-    authors:
-      - family-names: Xu
-        given-names: Ping
-      - family-names: Chen
-        given-names: Lin
-      - family-names: Zhang
-        given-names: Zhongheng
-    publisher:
-      name: PhysioNet
-    year: 2022
-    doi: 10.13026/xpt9-z726
-  - type: article
-    title: Critical Care Database Comprising Patients With Infection
-    authors:
-      - family-names: Xu
-        given-names: Ping
-      - family-names: Chen
-        given-names: Lin
-      - family-names: Zhu
-        given-names: Yuanfang
-      - family-names: Yu
-        given-names: Shuai
-      - family-names: Chen
-        given-names: Rangui
-      - family-names: Huang
-        given-names: Wenbin
-      - family-names: Wu
-        given-names: Fuli
-      - family-names: Zhang
-        given-names: Zhongheng
-    journal: Frontiers in Public Health
-    volume: 10
-    year: 2022
-    doi: 10.3389/fpubh.2022.852410
+- MEDS
+- ETL
+- electronic health records
+- intensive care
+- Zigong
+license:
+- mit
+message: If you use this software, please cite it using the metadata from this file.
+repository-code: https://github.com/rvandewater/Zigong_MEDS/tree/0.3.1
+title: Zigong MEDS ETL
+type: software
+version: 0.3.1
