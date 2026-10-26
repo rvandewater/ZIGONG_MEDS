@@ -160,6 +160,7 @@ in ETL_MEDS_Template.
 ## Citation
 
 If you use this ETL, please cite the Zigong database and its descriptor paper:
+
 ```bibtex
 @article{PhysioNet-icu-infection-zigong-fourth-1.1,
   author = {Xu, Ping and Chen, Lin and Zhang, Zhongheng},
