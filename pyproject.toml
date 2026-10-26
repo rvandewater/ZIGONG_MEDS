@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools-scm>=8.0", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "Zigong-MEDS"
-dynamic = ["version"]
+# Bump with `uv version --bump patch|minor|major`, then tag the commit with the same version.
+version = "0.3.0"
 authors = [
   { name="Robin van de Water", email="rpv2114@cumc.columbia.edu" },
 ]
@@ -42,8 +43,6 @@ dev = [
     "pyyaml>=6.0",
     "shfmt-py==3.12.0.2",
 ]
-
-[tool.setuptools_scm]
 
 [project.entry-points."MEDS_extract.pipelines"]
 Zigong = "Zigong_MEDS:event_configs.yaml"
