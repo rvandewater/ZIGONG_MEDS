@@ -160,10 +160,30 @@ in ETL_MEDS_Template.
 ## Citation
 
 If you use this ETL, please cite the Zigong database and its descriptor paper:
-
-- Xu, P., Chen, L., & Zhang, Z. (2022). *Critical care database comprising patients with infection at
-    Zigong Fourth People's Hospital* (version 1.1). PhysioNet. https://doi.org/10.13026/xpt9-z726
-- Xu, P., Chen, L., Zhu, Y. et al. Critical Care Database Comprising Patients With Infection. *Front.
-    Public Health* 10 (2022). https://doi.org/10.3389/fpubh.2022.852410
+```bibtex
+@article{PhysioNet-icu-infection-zigong-fourth-1.1,
+  author = {Xu, Ping and Chen, Lin and Zhang, Zhongheng},
+  title = {{Critical care database comprising patients with infection at Zigong Fourth People's Hospital}},
+  journal = {{PhysioNet}},
+  year = {2022},
+  month = jun,
+  note = {Version 1.1},
+  doi = {10.13026/xpt9-z726},
+  url = {https://doi.org/10.13026/xpt9-z726}
+}
+@article{xuCriticalCareDatabase2022a,
+  title = {Critical {{Care Database Comprising Patients With Infection}}},
+  author = {Xu, Ping and Chen, Lin and Zhu, Yuanfang and Yu, Shuai and Chen, Rangui and Huang, Wenbin and Wu, Fuli and Zhang, Zhongheng},
+  year = 2022,
+  month = mar,
+  journal = {Frontiers in Public Health},
+  volume = {10},
+  publisher = {Frontiers},
+  issn = {2296-2565},
+  doi = {10.3389/fpubh.2022.852410},
+  langid = {english},
+  keywords = {big data & analytics,Critical Care,database,Infections,Open access},
+}
+```
 
 See also [`CITATION.cff`](CITATION.cff).
