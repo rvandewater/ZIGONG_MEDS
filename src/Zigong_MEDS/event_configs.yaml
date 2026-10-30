@@ -16,7 +16,8 @@
 #   null, so every code and text value below guards against both. Free-text nursing fields also
 #   require a word character, which drops whitespace-, DEL- and punctuation-only entries.
 # - Codes keep the source's own vocabulary. No standard-terminology parent is claimed where the
-#   release does not document one.
+#   release does not document one. Vocabulary tags (ICD10CN, LOINC for core vital signs) and
+#   same-dataset parents are added by suMEDS from `sumeds_rules.yaml`, not by this config.
 # - Every event describes its codes in `metadata/codes.parquet` through a `_metadata: _self:`
 #   block: a template over the event's own columns that names the source column it came from.
 #   The release ships no code dictionary, so the templates restate the column meaning given by the
@@ -129,22 +130,12 @@ dtICD:
     discharge_diagnosis_status: '$Status_Discharge if $Status_Discharge != "NA"'
     inpatient_stay_id: $INP_NO
     # The codes are ICD-10 in the Chinese national clinical extension (`J18.900`, `A41.900x001`,
-    # `I10.x01`, morphology `M80000/3`), the code format of OMOP's ICD10CN vocabulary (OHDSI
-    # Vocabulary-v5.0, ICD10CN/load_stage.sql), so each well-formed code is its own `ICD10CN/` parent
-    # and vocabulary tooling resolves its title. Two spellings are normalized to that format: an
-    # upper-case extension marker `X` becomes `x`, and a trailing dagger `+` is dropped. Dagger and
-    # asterisk pairs (`A00.000+B00.0*`) and other shapes get no parent.
+    # `I10.x01`, morphology `M80000/3`). Their `ICD10CN` vocabulary tag and same-dataset parents are
+    # added by suMEDS from `sumeds_rules.yaml` (README, "Enriching code metadata with suMEDS").
     _metadata:
       _self:
         description: >-
           f"Diagnosis, ICD-10 (Chinese edition) code {$ICD_Code} (dtICD.ICD_Code)"
-        parent_codes: >-
-          f"ICD10CN/{$ICD_Code[0:7]}" if /^[A-Z]\d{2}\.\d{3}\+?$/ in $ICD_Code
-          else f"ICD10CN/{$ICD_Code[0:7]}x{$ICD_Code[8:11]}" if /^[A-Z]\d{2}\.\d{3}[xX]\d{3}\+?$/ in $ICD_Code
-          else f"ICD10CN/{$ICD_Code[0:4]}x{$ICD_Code[5:7]}x{$ICD_Code[8:11]}"
-          if /^[A-Z]\d{2}\.[xX]\d{2}[xX]\d{3}\+?$/ in $ICD_Code
-          else f"ICD10CN/{$ICD_Code[0:4]}x{$ICD_Code[5:7]}" if /^[A-Z]\d{2}\.[xX]\d{2}\+?$/ in $ICD_Code
-          else f"ICD10CN/{$ICD_Code}" if /^M\d{5}\/\d$/ in $ICD_Code
 
 dtLab:
   _table:
@@ -206,8 +197,8 @@ dtNursingChart:
       chart_time: >-
         (1970-01-01 @ 00:00) + $ChartTime::?float64::hours
         if $ChartTime::?float64 >= -24 and $ChartTime::?float64 <= $DISCHARGE_DATE_TIME
-  # The six vital signs below carry the LOINC code that the HL7 FHIR R4 vital-signs profile
-  # (https://hl7.org/fhir/R4/observation-vitalsigns.html, CC0) assigns them as a parent.
+  # The six core vital signs below get their LOINC code from the suMEDS crosswalk
+  # `zigong/nursing_vitals_loinc` (HL7 FHIR R4 vital-signs profile), applied by `sumeds_rules.yaml`.
   temperature:
     code: '"NURSING//TEMPERATURE" if $temperature::?float64 >= 0'
     time: $chart_time
@@ -218,8 +209,6 @@ dtNursingChart:
       _self:
         description: >-
           "Body temperature, degC (dtNursingChart.temperature)"
-        parent_codes: >-
-          "LOINC/8310-5"
   heart_rate:
     code: '"NURSING//HEART_RATE" if $heart_rate::?float64 >= 0'
     time: $chart_time
@@ -230,8 +219,6 @@ dtNursingChart:
       _self:
         description: >-
           "Heart rate, /min (dtNursingChart.heart_rate)"
-        parent_codes: >-
-          "LOINC/8867-4"
   respiratory_rate:
     code: '"NURSING//RESPIRATORY_RATE" if $breathing::?float64 >= 0'
     time: $chart_time
@@ -242,8 +229,6 @@ dtNursingChart:
       _self:
         description: >-
           "Respiratory rate, /min (dtNursingChart.breathing)"
-        parent_codes: >-
-          "LOINC/9279-1"
   oxygen_saturation:
     code: '"NURSING//OXYGEN_SATURATION" if $Blood_oxygen_saturation::?float64 >= 0'
     time: $chart_time
@@ -254,8 +239,6 @@ dtNursingChart:
       _self:
         description: >-
           "Blood oxygen saturation, % (dtNursingChart.Blood_oxygen_saturation)"
-        parent_codes: >-
-          "LOINC/2708-6"
   systolic_blood_pressure:
     code: '"NURSING//SYSTOLIC_BLOOD_PRESSURE" if $Blood_pressure_high::?float64 >= 0'
     time: $chart_time
@@ -266,8 +249,6 @@ dtNursingChart:
       _self:
         description: >-
           "Systolic blood pressure, mmHg (dtNursingChart.Blood_pressure_high)"
-        parent_codes: >-
-          "LOINC/8480-6"
   diastolic_blood_pressure:
     code: '"NURSING//DIASTOLIC_BLOOD_PRESSURE" if $Blood_pressure_low::?float64 >= 0'
     time: $chart_time
@@ -278,8 +259,6 @@ dtNursingChart:
       _self:
         description: >-
           "Diastolic blood pressure, mmHg (dtNursingChart.Blood_pressure_low)"
-        parent_codes: >-
-          "LOINC/8462-4"
   invasive_systolic_blood_pressure:
     code: '"NURSING//INVASIVE_SYSTOLIC_BLOOD_PRESSURE" if $Invasive_SBP::?float64 >= 0'
     time: $chart_time

@@ -87,7 +87,7 @@ ICD = [
     {"INP_NO": 1002, "PATIENT_ID": 102, "ICD_Code": "A41.900x001", "ICD_desc": "Sepsis",
      "Status_Discharge": NA, "Diagnosis_seq": 1},
     # Spelling variants of the code format: an upper-case extension marker with a trailing dagger
-    # (normalized for the ICD10CN parent), and a dagger/asterisk pair (no parent).
+    # (normalized by the suMEDS ICD10CN rule, see test_sumeds_rules.py), and a dagger/asterisk pair.
     {"INP_NO": 1002, "PATIENT_ID": 102, "ICD_Code": "I10.X01+", "ICD_desc": "Hypertension",
      "Status_Discharge": "Recovered", "Diagnosis_seq": 2},
     {"INP_NO": 1003, "PATIENT_ID": 103, "ICD_Code": "A18.000+M49.0*", "ICD_desc": "Tuberculosis",
@@ -408,12 +408,6 @@ def test_code_metadata(cohort: Path, data: pl.DataFrame):
         "answer 2_Mostly true (dtOutCome.SF36_GH_GetWorse)"
     )
 
-    # Diagnoses: each well-formed code is its own ICD10CN parent, in OMOP's spelling.
-    parents = {c: by_code[f"DIAGNOSIS//ICD//{c}"]["parent_codes"] for c in ("J18.900", "A41.900x001")}
-    assert parents == {"J18.900": ["ICD10CN/J18.900"], "A41.900x001": ["ICD10CN/A41.900x001"]}
-    assert by_code["DIAGNOSIS//ICD//I10.X01+"]["parent_codes"] == ["ICD10CN/I10.x01"]
-    assert by_code["DIAGNOSIS//ICD//A18.000+M49.0*"]["parent_codes"] is None
-
-    # Core vital signs carry their FHIR vital-signs LOINC code; other nursing codes none.
-    assert by_code["NURSING//HEART_RATE"]["parent_codes"] == ["LOINC/8867-4"]
-    assert by_code["NURSING//CPOT_PAIN_SCORE"]["parent_codes"] is None
+    # The ETL writes no parent codes: ICD10CN tags, the vital-sign LOINC codes and same-dataset
+    # parents come from suMEDS through `sumeds_rules.yaml` (see test_sumeds_rules.py).
+    assert "parent_codes" not in codes.columns

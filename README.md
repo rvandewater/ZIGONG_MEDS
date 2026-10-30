@@ -106,24 +106,49 @@ meanings come from the column names and the
 [PhysioNet documentation](https://physionet.org/content/icu-infection-zigong-fourth/1.1/) and its
 descriptor paper (Xu et al. 2022, CC BY 4.0).
 
-| Codes                                                                                                                                   | `parent_codes`                                                   | Source                                                                                                                                                                                                                                             |
-| --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DIAGNOSIS//ICD//{code}`                                                                                                                | `ICD10CN/{code}` for well-formed codes                           | The release documents ICD-10 codes; the code format is OMOP's ICD10CN ([OHDSI Vocabulary-v5.0 `ICD10CN/load_stage.sql`](https://github.com/OHDSI/Vocabulary-v5.0/blob/6533b8f38f01d5e9982bdcb27aa08b021430b28e/ICD10CN/load_stage.sql), Unlicense) |
-| `NURSING//` `TEMPERATURE`, `HEART_RATE`, `RESPIRATORY_RATE`, `OXYGEN_SATURATION`, `SYSTOLIC_BLOOD_PRESSURE`, `DIASTOLIC_BLOOD_PRESSURE` | `LOINC/8310-5`, `8867-4`, `9279-1`, `2708-6`, `8480-6`, `8462-4` | [HL7 FHIR R4 vital-signs profile](https://hl7.org/fhir/R4/observation-vitalsigns.html) (CC0)                                                                                                                                                       |
-| Everything else                                                                                                                         | none                                                             | Description only                                                                                                                                                                                                                                   |
+The ETL writes no `parent_codes`: the release documents no vocabulary mapping. Vocabulary tags and
+same-dataset parents come from suMEDS (next section).
 
-- **Diagnosis parents.** A code is its own `ICD10CN/` parent when it has one of the Chinese-edition
-    shapes (`J18.900`, `A41.900x001`, `I10.x01`) or is a morphology code (`M80000/3`), so
-    vocabulary tooling can resolve its title. Two spellings are normalized to OMOP's form, which is an
-    inference from the format rather than a documented rule: an upper-case extension marker `X` becomes
-    `x`, and a trailing dagger `+` is dropped. Dagger and asterisk pairs and other shapes get no parent.
-    Athena's ICD10CN is built from a 2016 release, so a code added later will not resolve there.
 - **SF-36.** Descriptions name each item after its source column in our own words. They do not
     reproduce the questionnaire's item wording, which is licensed in some versions.
 - **Fixed codes.** `_self` metadata attaches through the columns a code expression references, so
     `HOSPITAL_ADMISSION`, `ICU_DISCHARGE`, `HOSPITAL_DISCHARGE` and `MEDS_DEATH` are written as
     `"CODE" if $PATIENT_ID == $PATIENT_ID`. A row without a subject id never reaches extraction, so this
     changes no events.
+
+## Enriching code metadata with suMEDS
+
+External-ontology work lives in [suMEDS](https://github.com/rvandewater/SumMEDS), not in this ETL. The
+package ships the rules for it, `src/Zigong_MEDS/sumeds_rules.yaml` (also installed as package data), which
+suMEDS applies to a finished build (this needs a suMEDS version with `--rules` support):
+
+```bash
+suMEDS-enrich "$MEDS_OUTPUT_DIR/metadata/codes.parquet" -o codes-enriched.parquet \
+	--rules src/Zigong_MEDS/sumeds_rules.yaml
+```
+
+The rules add, as `VOCABULARY//CODE` parents and same-dataset codes:
+
+- **ICD10CN tags** (`zigong-icd10cn-diagnoses`): a diagnosis code in one of the Chinese-edition shapes
+    (`J18.900`, `A41.900x001`, `I10.x01`) or a morphology code (`M80000/3`) gets its OMOP ICD10CN code
+    (`ICD10CN//J18.900`), the format built by
+    [OHDSI Vocabulary-v5.0 `ICD10CN/load_stage.sql`](https://github.com/OHDSI/Vocabulary-v5.0/blob/6533b8f38f01d5e9982bdcb27aa08b021430b28e/ICD10CN/load_stage.sql)
+    (Unlicense). Two spellings are normalized to OMOP's form, which is an inference from the format
+    rather than a documented rule: an upper-case extension marker `X` becomes `x`, and a trailing dagger
+    `+` is dropped. Dagger and asterisk pairs and other shapes get nothing. suMEDS's versioned ontology
+    data (sumeds-ontologies, pinned release) has no ICD-10-CN pack, so these are tags, validated only
+    when Athena is configured. Athena's ICD10CN is built from a 2016 release, so a code added later will
+    not resolve there.
+- **Vital-sign LOINC codes** (`zigong-nursing-vitals-loinc`): `NURSING//TEMPERATURE`, `HEART_RATE`,
+    `RESPIRATORY_RATE`, `OXYGEN_SATURATION`, `SYSTOLIC_BLOOD_PRESSURE` and `DIASTOLIC_BLOOD_PRESSURE` get
+    the LOINC code that the [HL7 FHIR R4 vital-signs profile](https://hl7.org/fhir/R4/observation-vitalsigns.html)
+    (CC0) assigns, from the crosswalk `zigong/nursing_vitals_loinc` in suMEDS's versioned ontology data.
+    Oxygen saturation is `59408-5` (by pulse oximetry). The codes are validated against the LOINC pack.
+- **Same-dataset parents** (`zigong-diagnosis-prefix`): a diagnosis code gets the nearest shorter
+    diagnosis code that exists in the build, skipping dots, for example `DIAGNOSIS//ICD//A41.900x001`
+    under `DIAGNOSIS//ICD//A41.900`. Morphology codes and dagger/asterisk pairs are not truncated.
+
+The ETL alone writes none of these parents; run suMEDS to get them.
 
 ## Data notes
 
@@ -153,11 +178,13 @@ descriptor paper (Xu et al. 2022, CC BY 4.0).
 - **Unmapped columns.** Five nursing columns are NA in every row. `MAP`, `PSIPAP`, `R` and `FIO2` hold only
     unit strings. `Invasive_SBP._1` is a documented technical duplicate, and `F` is documented as having no
     clinical relevance. See [#6](https://github.com/rvandewater/ZIGONG_MEDS/issues/6).
-- **Local vocabularies.** Diagnoses use the release's Chinese national extension of ICD-10. They carry
-    an `ICD10CN/` parent (see [Code metadata](#code-metadata)) but no WHO ICD-10 parent yet; see
-    [#1](https://github.com/rvandewater/ZIGONG_MEDS/issues/1). Labs and drugs use local names with no
-    LOINC or ATC parents; see [#8](https://github.com/rvandewater/ZIGONG_MEDS/issues/8). SF-36 answers are inconsistently coded in the
-    source; see [#5](https://github.com/rvandewater/ZIGONG_MEDS/issues/5).
+- **Local vocabularies.** Diagnoses use the release's Chinese national extension of ICD-10, and labs and
+    drugs use local names. The ETL attaches no standard-terminology parents; suMEDS adds ICD10CN tags
+    for diagnoses and LOINC codes for six vital signs (see
+    [Enriching code metadata with suMEDS](#enriching-code-metadata-with-sumeds)). WHO ICD-10 parents
+    ([#1](https://github.com/rvandewater/ZIGONG_MEDS/issues/1)) and LOINC or ATC parents for labs and
+    drugs ([#8](https://github.com/rvandewater/ZIGONG_MEDS/issues/8)) are still open. SF-36 answers are
+    inconsistently coded in the source; see [#5](https://github.com/rvandewater/ZIGONG_MEDS/issues/5).
 - **No ICU admission event.** The release records ICU discharge but not ICU entry; see
     [#2](https://github.com/rvandewater/ZIGONG_MEDS/issues/2).
 
@@ -171,6 +198,10 @@ Zigong has no open demo release, so there are two synthetic checks:
 - The [Synthetic ETL workflow](.github/workflows/synthetic-etl.yaml) generates raw files straight from the
     config with [MESSY-synth](https://pypi.org/project/MESSY-synth/) and runs the ETL over them. It fails if
     any event block produces no events.
+
+`tests/test_config.py` checks that every event block declares a description, and
+`tests/test_sumeds_rules.py` checks that `sumeds_rules.yaml` is a well-formed `sumeds-rules/0.1` file and
+applies each rule to synthetic codes built from the code templates in the event config.
 
 ```bash
 uv sync --group dev
