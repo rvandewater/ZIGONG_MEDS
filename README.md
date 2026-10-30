@@ -95,6 +95,36 @@ Every event linked to a stay carries `inpatient_stay_id` (`INP_NO`). The R-writt
 values as the string `NA` or a quoted empty string; both are treated as missing, as are text entries with
 no letters or digits.
 
+## Code metadata
+
+`metadata/codes.parquet` gives every code a `description`. The release ships no code dictionary (its
+`datDictionary.csv` describes table columns, not code values), so each event block in the config has a
+`_metadata: _self:` template that states what the source column records and names it, for example
+`Sex: Female (dtBaseline.SEX)` or `Heart rate, /min (dtNursingChart.heart_rate)`. Department, drug,
+lab, infection-site and SF-36 answer names are inserted as the release records them. The column
+meanings come from the column names and the
+[PhysioNet documentation](https://physionet.org/content/icu-infection-zigong-fourth/1.1/) and its
+descriptor paper (Xu et al. 2022, CC BY 4.0).
+
+| Codes                                                                                                                                   | `parent_codes`                                                   | Source                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DIAGNOSIS//ICD//{code}`                                                                                                                | `ICD10CN/{code}` for well-formed codes                           | The release documents ICD-10 codes; the code format is OMOP's ICD10CN ([OHDSI Vocabulary-v5.0 `ICD10CN/load_stage.sql`](https://github.com/OHDSI/Vocabulary-v5.0/blob/6533b8f38f01d5e9982bdcb27aa08b021430b28e/ICD10CN/load_stage.sql), Unlicense) |
+| `NURSING//` `TEMPERATURE`, `HEART_RATE`, `RESPIRATORY_RATE`, `OXYGEN_SATURATION`, `SYSTOLIC_BLOOD_PRESSURE`, `DIASTOLIC_BLOOD_PRESSURE` | `LOINC/8310-5`, `8867-4`, `9279-1`, `2708-6`, `8480-6`, `8462-4` | [HL7 FHIR R4 vital-signs profile](https://hl7.org/fhir/R4/observation-vitalsigns.html) (CC0)                                                                                                                                                       |
+| Everything else                                                                                                                         | none                                                             | Description only                                                                                                                                                                                                                                   |
+
+- **Diagnosis parents.** A code is its own `ICD10CN/` parent when it has one of the Chinese-edition
+    shapes (`J18.900`, `A41.900x001`, `I10.x01`) or is a morphology code (`M80000/3`), so
+    vocabulary tooling can resolve its title. Two spellings are normalized to OMOP's form, which is an
+    inference from the format rather than a documented rule: an upper-case extension marker `X` becomes
+    `x`, and a trailing dagger `+` is dropped. Dagger and asterisk pairs and other shapes get no parent.
+    Athena's ICD10CN is built from a 2016 release, so a code added later will not resolve there.
+- **SF-36.** Descriptions name each item after its source column in our own words. They do not
+    reproduce the questionnaire's item wording, which is licensed in some versions.
+- **Fixed codes.** `_self` metadata attaches through the columns a code expression references, so
+    `HOSPITAL_ADMISSION`, `ICU_DISCHARGE`, `HOSPITAL_DISCHARGE` and `MEDS_DEATH` are written as
+    `"CODE" if $PATIENT_ID == $PATIENT_ID`. A row without a subject id never reaches extraction, so this
+    changes no events.
+
 ## Data notes
 
 - **Coarse nursing chart timestamps.** `dtNursingChart` has about 1 million rows with a usable
@@ -123,10 +153,10 @@ no letters or digits.
 - **Unmapped columns.** Five nursing columns are NA in every row. `MAP`, `PSIPAP`, `R` and `FIO2` hold only
     unit strings. `Invasive_SBP._1` is a documented technical duplicate, and `F` is documented as having no
     clinical relevance. See [#6](https://github.com/rvandewater/ZIGONG_MEDS/issues/6).
-- **Local vocabularies.** Diagnoses use the release's Chinese national extension of ICD-10, and labs and
-    drugs use local names. No standard-terminology parents are attached yet; see
-    [#1](https://github.com/rvandewater/ZIGONG_MEDS/issues/1) and
-    [#8](https://github.com/rvandewater/ZIGONG_MEDS/issues/8). SF-36 answers are inconsistently coded in the
+- **Local vocabularies.** Diagnoses use the release's Chinese national extension of ICD-10. They carry
+    an `ICD10CN/` parent (see [Code metadata](#code-metadata)) but no WHO ICD-10 parent yet; see
+    [#1](https://github.com/rvandewater/ZIGONG_MEDS/issues/1). Labs and drugs use local names with no
+    LOINC or ATC parents; see [#8](https://github.com/rvandewater/ZIGONG_MEDS/issues/8). SF-36 answers are inconsistently coded in the
     source; see [#5](https://github.com/rvandewater/ZIGONG_MEDS/issues/5).
 - **No ICU admission event.** The release records ICU discharge but not ICU entry; see
     [#2](https://github.com/rvandewater/ZIGONG_MEDS/issues/2).
